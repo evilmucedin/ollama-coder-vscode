@@ -144,6 +144,74 @@ export function parsePlaySlash(
   return parsePlayIntent("play " + m[2].trim());
 }
 
+/**
+ * Upper bound on how much editor text the plugin ships to the (tiny) router
+ * model per field. The selection / active-file excerpt are sliced to this so
+ * the router payload stays small and fast — see ARCHITECTURE.md §4.3.
+ */
+const ROUTER_CONTEXT_CHARS = 800;
+
+/** Max number of open-file paths we list for the router. */
+const ROUTER_MAX_OPEN_FILES = 20;
+
+export interface RouterContext {
+  activeFile: string | null;
+  language?: string;
+  hasSelection: boolean;
+  selectionText?: string;
+  activeFileExcerpt?: string;
+  openFiles: string[];
+}
+
+/**
+ * Gather the real editor / VS Code state the router needs to classify a turn.
+ *
+ * Ollama has no I/O: it can't read files or query VS Code, so the plugin must
+ * collect every byte the model sees and send it over HTTP (ARCHITECTURE.md
+ * Invariant 8). The router used to get only `active_file` + a `has_selection`
+ * flag and so decided edit-vs-chat and picked `target_path` nearly blind. This
+ * gathers, bounded by ROUTER_CONTEXT_CHARS:
+ *   - the active file's relative path and `languageId`
+ *   - the selected text (when non-empty), else the head of the active file so
+ *     the router knows what it's looking at
+ *   - the list of open-editor paths (reusing the tabGroups pattern from
+ *     tools.ts → getOpenEditors), capped at ROUTER_MAX_OPEN_FILES
+ *
+ * Everything here is workspace content the model already sees elsewhere (chat
+ * @mentions, agent read_file); no secrets / env are read.
+ */
+export function collectRouterContext(): RouterContext {
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs);
+  const openFiles = tabs
+    .map((t) =>
+      t.input instanceof vscode.TabInputText
+        ? vscode.workspace.asRelativePath(t.input.uri)
+        : null
+    )
+    .filter((x): x is string => !!x)
+    .slice(0, ROUTER_MAX_OPEN_FILES);
+
+  const ed = vscode.window.activeTextEditor;
+  if (!ed) {
+    return { activeFile: null, hasSelection: false, openFiles };
+  }
+
+  const activeFile = vscode.workspace.asRelativePath(ed.document.uri);
+  const language = ed.document.languageId || undefined;
+  const sel = ed.selection;
+  const hasSelection = !sel.isEmpty;
+
+  const ctx: RouterContext = { activeFile, language, hasSelection, openFiles };
+  if (hasSelection) {
+    const selectionText = ed.document.getText(sel).slice(0, ROUTER_CONTEXT_CHARS);
+    if (selectionText.trim()) ctx.selectionText = selectionText;
+  } else {
+    const excerpt = ed.document.getText().slice(0, ROUTER_CONTEXT_CHARS);
+    if (excerpt.trim()) ctx.activeFileExcerpt = excerpt;
+  }
+  return ctx;
+}
+
 function formatSearchResults(
   query: string,
   backend: string,
@@ -630,13 +698,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const routerModel =
           cfg.get<string>("routerModel", "") ||
           cfg.get<string>("completionModel", "qwen2.5-coder:1.5b-base");
-        const ed = vscode.window.activeTextEditor;
+        // Ollama can't read files or query VS Code, so the plugin gathers the
+        // editor state and sends it to the router (ARCHITECTURE.md Invariant 8).
+        const rctx = collectRouterContext();
         routerPlan = await routeWithModel({
           endpoint,
           model: routerModel,
           userText: text,
-          hasSelection: !!ed && !ed.selection.isEmpty,
-          activeFile: ed ? vscode.workspace.asRelativePath(ed.document.uri) : undefined,
+          hasSelection: rctx.hasSelection,
+          activeFile: rctx.activeFile ?? undefined,
+          language: rctx.language,
+          selectionText: rctx.selectionText,
+          activeFileExcerpt: rctx.activeFileExcerpt,
+          openFiles: rctx.openFiles,
         });
         if (routerPlan) {
           this.post({

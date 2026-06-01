@@ -295,6 +295,10 @@ test("ROUTER_SYSTEM_PROMPT covers the new RoutePlan fields", () => {
     "Codeforces",
     "Project Euler",
     "Advent of Code",
+    // Editor-context fields the plugin gathers and sends (Ollama has no I/O).
+    "selection_text",
+    "active_file_excerpt",
+    "open_files",
   ]) {
     assert.ok(
       ROUTER_SYSTEM_PROMPT.includes(needle),
@@ -343,6 +347,28 @@ test("chatView reads useLlmRouter / shadowLlmRouter / routerModel settings", () 
     /routeWithModel\b/.test(src),
     "chatView must call routeWithModel"
   );
+});
+
+test("chatView gathers editor context and feeds it to the router", () => {
+  // Ollama can't read files or query VS Code, so the plugin must collect the
+  // editor state itself and pass it to routeWithModel. Pin that wiring.
+  const src = fs.readFileSync(chatViewPath, "utf8");
+  assert.ok(
+    /collectRouterContext\b/.test(src),
+    "chatView must gather editor context via collectRouterContext"
+  );
+  for (const token of [
+    "languageId",
+    "selectionText",
+    "activeFileExcerpt",
+    "openFiles",
+    "tabGroups",
+  ]) {
+    assert.ok(
+      src.includes(token),
+      `chatView must reference ${token} when gathering router context`
+    );
+  }
 });
 
 test("router is ON by default in package.json (as of v1.4.7)", () => {

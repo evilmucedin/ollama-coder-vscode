@@ -170,7 +170,8 @@ These hold today and are the contract any future refactor must keep:
    `read`, `write`, `unlink`, or `exec` anything on disk. Every byte the
    model “sees” from the user's workspace is pulled by the plugin
    (`tools.read_file`, `repo_map`, `@mention` expansion in
-   `chatView.expandMentions`) and packaged into a chat message. Every
+   `chatView.expandMentions`, and the router's
+   `chatView.collectRouterContext`) and packaged into a chat message. Every
    file the model produces (`tools.write_file`, `tools.edit_file`, and
    the `apply.saveToFile` fallback in `chatView.maybeFallbackSave`) is
    written by the *plugin's* code, in the *plugin's* process, on the
@@ -248,9 +249,19 @@ can output the four-key object reliably.
 Pseudo-code:
 
 ```ts
+// Ollama has no I/O — it can't read files or query VS Code — so the plugin
+// gathers the editor state itself (chatView.collectRouterContext) and ships it
+// in the payload, bounded by ROUTER_CONTEXT_CHARS (800). The bulky fields are
+// included only when present, to keep the JSON tight for the tiny router model.
 const plan = await routeWithModel({
   endpoint, model: routerModel,
-  prompt: ROUTING_SYSTEM + JSON.stringify({ user_text, has_selection, active_file }),
+  prompt: ROUTING_SYSTEM + JSON.stringify({
+    user_text, has_selection, active_file,
+    language,            // active file's languageId
+    selection_text,      // selected code (when non-empty), else omitted
+    active_file_excerpt, // head of the active file (when nothing selected)
+    open_files,          // workspace-relative paths of the open editors
+  }),
   format: "json",
 });
 
@@ -268,8 +279,13 @@ switch (plan.kind) {
 The router is *not* allowed to do everything. Concretely:
 
 - The router **never executes a tool**. It only labels.
-- The router **never sees secrets** (keychain entries, OS env, file
-  contents). Just the user's prompt and a few editor-state flags.
+- The router **never sees secrets** (keychain entries, OS env). It *does*
+  receive bounded, plugin-gathered editor state — the active file's path and
+  language, the current selection (or a short head excerpt of the active
+  file), and the open-file paths — because Ollama has no I/O and can't read
+  any of that itself. This is the same workspace content the model already
+  sees via chat `@mentions` / the agent's `read_file`; it is capped at
+  `ROUTER_CONTEXT_CHARS` and goes only to `$OLLAMA_HOST`.
 - The router's output is **schema-validated** before we act on it. If
   the JSON doesn't parse, or `kind` is unknown, we fall back to plain
   chat. The model cannot make us do something we haven't authorised.
@@ -324,10 +340,13 @@ To make this concrete: *"write to a new file C++ Hello World program"*.
 1.  user types in chat, presses Cmd+Enter
 2.  chatView.handleSend() receives { text, includeFile=false, agent=false }
 
-3.  ROUTING PHASE (today: regex; tomorrow: LLM)
-    looksLikeShowIntent(text)         → false
-    looksLikeFileWriteIntent(text)    → true
-    looksLikeWebSearchIntent(text)    → false
+3.  ROUTING PHASE (LLM router authoritative; regex is the fallback)
+    collectRouterContext()            → { active_file, language,
+                                          selection_text | active_file_excerpt,
+                                          open_files }   (plugin-gathered:
+                                          Ollama can't read these itself)
+    routeWithModel({ user_text, …context }) → { kind: "create_file", … }
+    (fallback) looksLikeShowIntent / looksLikeFileWriteIntent / …
     inferLanguageExt(text)            → { name: "C++", ext: ".cpp" }
     decision: agent mode, with filename hint appended.
 

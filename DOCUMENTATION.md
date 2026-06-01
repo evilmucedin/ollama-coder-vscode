@@ -91,6 +91,37 @@ Why non-streaming when tools are present: Ollama only emits `tool_calls` in the
 final assistant message; streaming them mid-response is not reliable across
 models, so we wait for the complete message before executing tools.
 
+### 2d. The LLM router and its plugin-gathered context
+
+Before a chat turn runs, the **LLM router** (`src/router.ts`,
+`routeWithModel`) classifies the request — chat vs. create/edit a file vs.
+web-search-then-chat vs. explain/refactor the selection vs. run a command —
+and picks a `target_path` when a file is involved. It's authoritative by
+default (`ollamaCoder.useLlmRouter`); the regex pipeline is the fallback when
+it fails or times out.
+
+Ollama has no I/O: it can't read files or query VS Code. So the plugin
+gathers the editor state itself (`chatView.collectRouterContext`) and ships it
+in the router's JSON payload, bounded by `ROUTER_CONTEXT_CHARS` (800 chars per
+field):
+
+```jsonc
+{
+  "user_text": "refactor this",
+  "has_selection": true,
+  "active_file": "src/foo.ts",
+  "language": "typescript",          // active file's languageId
+  "selection_text": "const x = 1;",  // selection (when non-empty) …
+  "active_file_excerpt": "…",         // … else the head of the active file
+  "open_files": ["src/foo.ts", "src/bar.ts"]   // open-editor paths (≤20)
+}
+```
+
+The bulky fields are sent only when present, to keep the JSON tight for the
+tiny router model. This is the same workspace content the model already sees
+via `@mentions` / the agent's `read_file`; no secrets (keychain, OS env) are
+read, and the payload goes only to `$OLLAMA_HOST`.
+
 ---
 
 ## 3. Tools the agent can call

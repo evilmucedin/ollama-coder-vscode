@@ -107,6 +107,19 @@ export const ROUTER_SYSTEM_PROMPT =
   "  rephrased:      the user request, optionally cleaned up. NEVER empty.\n" +
   "  reason:         one-sentence explanation; shown in the UI.\n" +
   "\n" +
+  "Editor context you are given (the plugin collects this from VS Code and sends\n" +
+  "it to you because Ollama cannot read files or query the editor itself):\n" +
+  "  user_text:           the request to classify.\n" +
+  "  has_selection:       true if the user has text selected in the active editor.\n" +
+  "  active_file:         workspace-relative path of the active file, if any.\n" +
+  "  language:            the active file's language id (e.g. 'typescript').\n" +
+  "  selection_text:      the selected code (truncated), when has_selection is true.\n" +
+  "  active_file_excerpt: the start of the active file (truncated), when nothing is selected.\n" +
+  "  open_files:          workspace-relative paths of the currently open editors.\n" +
+  "Use this context: prefer active_file (or a path from open_files) as target_path\n" +
+  "for edit_file; a non-empty selection_text supports explain_selection /\n" +
+  "refactor_selection; use language to pick a sensible extension.\n" +
+  "\n" +
   "Routing rules (apply top-to-bottom, first match wins):\n" +
   "1. 'show me / what is / how do / explain / describe / give me an example / in chat'\n" +
   "   -> chat. Even if they mention a filename.\n" +
@@ -141,6 +154,14 @@ export interface RouterOptions {
   userText: string;
   hasSelection?: boolean;
   activeFile?: string;
+  /** Active file's VS Code language id (e.g. "typescript"). */
+  language?: string;
+  /** Selected code, already truncated by the caller. Sent when present. */
+  selectionText?: string;
+  /** Head of the active file, already truncated. Sent when nothing is selected. */
+  activeFileExcerpt?: string;
+  /** Workspace-relative paths of the open editors. */
+  openFiles?: string[];
   signal?: AbortSignal;
   /**
    * Used by tests / shadow mode: timeout after which we give up on the router
@@ -242,11 +263,25 @@ export function coerceRoutePlan(
 export async function routeWithModel(
   opts: RouterOptions
 ): Promise<RoutePlan | null> {
-  const userPrompt = JSON.stringify({
+  // The plugin gathers the editor/file context (Ollama can't read it itself)
+  // and we forward it here. Only include the bulky fields when they're
+  // actually present, to keep the JSON small for the tiny router model.
+  const payload: Record<string, unknown> = {
     user_text: opts.userText,
     has_selection: !!opts.hasSelection,
     active_file: opts.activeFile ?? null,
-  });
+  };
+  if (opts.language && opts.language.trim()) payload.language = opts.language;
+  if (opts.selectionText && opts.selectionText.trim()) {
+    payload.selection_text = opts.selectionText;
+  }
+  if (opts.activeFileExcerpt && opts.activeFileExcerpt.trim()) {
+    payload.active_file_excerpt = opts.activeFileExcerpt;
+  }
+  if (opts.openFiles && opts.openFiles.length) {
+    payload.open_files = opts.openFiles;
+  }
+  const userPrompt = JSON.stringify(payload);
 
   const timeoutMs = opts.timeoutMs ?? 8000;
   const ctrl = new AbortController();

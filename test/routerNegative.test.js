@@ -146,3 +146,100 @@ test("routeWithModel returns null for content that is JSON but not an object", a
     );
   }
 });
+
+/* ---------------- plugin sends file & VS Code data to Ollama ------------- */
+
+// Ollama has no I/O — it can't read files or query VS Code, so the plugin
+// MUST gather the editor state and put it in the router payload. This pins
+// that the gathered fields reach Ollama (and that empty ones are omitted).
+test("routeWithModel ships gathered editor context in the user message", async () => {
+  let captured = null;
+  await withChatFull(
+    async (req) => {
+      captured = req;
+      return {
+        content: JSON.stringify({ kind: "refactor_selection", rephrased: "x" }),
+        tool_calls: [],
+      };
+    },
+    async () => {
+      await routerMod.routeWithModel({
+        ...opts,
+        userText: "refactor this",
+        hasSelection: true,
+        activeFile: "src/foo.ts",
+        language: "typescript",
+        selectionText: "const x = 1;",
+        // excerpt intentionally empty here -> must be omitted
+        activeFileExcerpt: "   ",
+        openFiles: ["src/foo.ts", "src/bar.ts"],
+      });
+    }
+  );
+
+  assert.ok(captured, "chatFull was not called");
+  const userMsg = captured.messages[1];
+  assert.equal(userMsg.role, "user");
+  const payload = JSON.parse(userMsg.content);
+
+  assert.equal(payload.user_text, "refactor this");
+  assert.equal(payload.has_selection, true);
+  assert.equal(payload.active_file, "src/foo.ts");
+  assert.equal(payload.language, "typescript");
+  assert.equal(payload.selection_text, "const x = 1;");
+  assert.deepEqual(payload.open_files, ["src/foo.ts", "src/bar.ts"]);
+  // Whitespace-only excerpt must NOT be sent (keeps payload tight).
+  assert.ok(
+    !("active_file_excerpt" in payload),
+    "whitespace-only active_file_excerpt should be omitted"
+  );
+});
+
+test("routeWithModel omits all optional context fields when none are provided", async () => {
+  let captured = null;
+  await withChatFull(
+    async (req) => {
+      captured = req;
+      return {
+        content: JSON.stringify({ kind: "chat", rephrased: "x" }),
+        tool_calls: [],
+      };
+    },
+    async () => {
+      await routerMod.routeWithModel(opts); // no language/selection/excerpt/openFiles
+    }
+  );
+
+  const payload = JSON.parse(captured.messages[1].content);
+  // The three baseline fields are always present...
+  assert.deepEqual(Object.keys(payload).sort(), [
+    "active_file",
+    "has_selection",
+    "user_text",
+  ]);
+});
+
+test("routeWithModel sends active_file_excerpt when there is no selection", async () => {
+  let captured = null;
+  await withChatFull(
+    async (req) => {
+      captured = req;
+      return {
+        content: JSON.stringify({ kind: "chat", rephrased: "x" }),
+        tool_calls: [],
+      };
+    },
+    async () => {
+      await routerMod.routeWithModel({
+        ...opts,
+        hasSelection: false,
+        activeFile: "src/foo.ts",
+        activeFileExcerpt: "export const answer = 42;",
+      });
+    }
+  );
+
+  const payload = JSON.parse(captured.messages[1].content);
+  assert.equal(payload.active_file_excerpt, "export const answer = 42;");
+  assert.ok(!("selection_text" in payload));
+});
