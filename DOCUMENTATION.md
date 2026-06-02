@@ -1,6 +1,6 @@
 # Ollama Free Coder — Architecture & Reference
 
-This document explains what the extension does, how it is structured, and what
+This document explains what the extension and standalone terminal app do, how they are structured, and what
 every script and source file is responsible for. It complements the user-facing
 `README.md` (which focuses on installation and features).
 
@@ -8,7 +8,7 @@ every script and source file is responsible for. It complements the user-facing
 
 ## 1. What the plugin is
 
-**Ollama Free Coder** is a fully-local VS Code coding assistant that talks to a
+**Ollama Free Coder** is a fully-local coding assistant with VS Code and terminal frontends that talk to a
 [Ollama](https://ollama.com) server running on the same machine. Nothing leaves
 your machine and no API keys are needed.
 
@@ -21,13 +21,15 @@ It provides:
 | `@mentions` (`@path/to/file`, `@selection`) | `src/chatView.ts` (`expandMentions`) |
 | Apply buttons on code blocks (Insert / Replace / Save…) | `src/apply.ts` + `chatView.ts` |
 | Agent mode — model can read & write the workspace via tools | `src/tools.ts` + `chatView.ts` (`runAgentLoop`) |
+| Standalone terminal agent for Ubuntu/macOS/Windows | `src/cli.ts` + `src/cliTools.ts` |
 | In-chat model picker | `src/chatView.ts` |
 | Code actions on selection (Explain / Refactor / Fix / …) | `src/codeActions.ts` |
 | Status-bar model switcher | `src/extension.ts` |
 | Ollama HTTP client (`/api/generate`, `/api/chat`, `/api/tags`) | `src/ollama.ts` |
-| Installer / bootstrapper for Ubuntu | `scripts/install-ubuntu.sh` |
+| Installer / bootstrapper for VS Code | `scripts/install-ubuntu.sh`, `scripts/install-macos.sh`, `scripts/install-windows.ps1` |
+| Installer / runner for terminal app | `scripts/install-cli-*.sh`, `scripts/install-cli-windows.ps1`, `scripts/run-cli-*` |
 
-The extension has **zero runtime npm dependencies** — it talks to Ollama over
+The extension and CLI have **zero runtime npm dependencies** — they talk to Ollama over
 Node's built-in `http` module.
 
 ---
@@ -91,7 +93,32 @@ Why non-streaming when tools are present: Ollama only emits `tool_calls` in the
 final assistant message; streaming them mid-response is not reliable across
 models, so we wait for the complete message before executing tools.
 
-### 2d. The LLM router and its plugin-gathered context
+### 2d. Terminal app turn (`src/cli.ts`)
+
+```
+user starts `ofc` in a folder
+   │
+   ▼
+CLI treats process.cwd() (or --cwd) as the workspace root
+   │
+   ▼
+routeWithModel() classifies the request with no editor selection/open tabs
+   │
+   ├─ play_music → buildMusicUrl() + open in the local browser/app
+   │
+   └─ coding request → runAgentLoop() with CLI_TOOL_SCHEMAS
+                       executeCliTool() reads/writes/searches only inside root
+                       writes and enabled shell commands ask y/N first
+```
+
+The CLI shares the core Ollama client (`ollama.ts`), LLM router (`router.ts`),
+agent loop (`agentLoop.ts`), problem-reference detector, music parser, web
+search, repo-map extraction, and SEARCH/REPLACE patch engine with the VS Code
+extension. The only terminal-specific code is `cli.ts` (argument parsing,
+REPL/one-shot prompt, console rendering) and `cliTools.ts` (Node filesystem /
+process implementation of the same tool schema).
+
+### 2e. The LLM router and its plugin-gathered context
 
 Before a chat turn runs, the **LLM router** (`src/router.ts`,
 `routeWithModel`) classifies the request — chat vs. create/edit a file vs.
@@ -126,16 +153,20 @@ read, and the payload goes only to `$OLLAMA_HOST`.
 
 ## 3. Tools the agent can call
 
-Defined in `src/tools.ts`. All paths are validated to stay inside the first
-workspace folder — the model cannot escape.
+Defined in `src/tools.ts` for VS Code and mirrored in `src/cliTools.ts` for the standalone terminal app. All paths are validated to stay inside the first
+workspace folder (or the CLI startup folder) — the model cannot escape.
 
 | Tool | Description | Safety |
 | --- | --- | --- |
 | `read_file(path)` | UTF-8 read, **64 KB** cap, returns line-numbered text. | Read-only. |
 | `list_files(path)` | `readDirectory`, dirs first, capped at **200** entries. | Read-only. |
 | `search_text(query, is_regex?, glob?)` | Literal or regex search across workspace; capped at **50** matches; skips `node_modules`, `.git`, `out`, `dist`, `build`, and files larger than 1 MB. | Read-only. |
-| `write_file(path, content)` | Creates or overwrites a file. **Always prompts the user** with `Overwrite / Show diff first / Reject`. "Show diff first" opens a side-by-side preview before a modal confirm. | Workspace-confined, user-gated. |
-| `get_open_editors()` | Returns the workspace-relative paths of open tabs and the active editor's selection range. | Read-only. |
+| `write_file(path, content)` | Creates or overwrites a file. **Always prompts the user** with `Overwrite / Show diff first / Reject` in VS Code, or `y/N` in the CLI. "Show diff first" opens a side-by-side preview before a modal confirm in VS Code. | Workspace-confined, user-gated. |
+| `edit_file(path, search, replace)` | Applies an Aider-style exact SEARCH/REPLACE edit; empty `search` creates a new file. | Workspace-confined, user-gated. |
+| `repo_map(path?)` | Returns source files and top-level symbols so the agent can navigate before reading full files. | Read-only. |
+| `get_open_editors()` | Returns the workspace-relative paths of open tabs and the active editor's selection range. In the CLI it reports that there are no open editors and names the startup folder. | Read-only. |
+| `run_command(command, cwd?)` | Runs a shell command in the workspace. Disabled by default; when enabled, every call is confirmed and timeout-limited. | Workspace-confined cwd, user-gated. |
+| `web_search(query, limit?)` | Searches DuckDuckGo by default, or Google CSE when configured. | Network only when requested. |
 
 The JSON schemas exposed to Ollama follow the OpenAI tool-calling shape
 (`{ type: "function", function: { name, description, parameters } }`), which
@@ -218,7 +249,7 @@ cancellable VS Code notification.
 
 A small "language understanding in, local action out" feature (the same shape
 as everything else here). Implemented in `src/music.ts` (pure logic) and
-`src/chatView.ts` / `src/extension.ts` (the action).
+`src/chatView.ts` / `src/extension.ts` / `src/cli.ts` (the action).
 
 - **Intent** comes from one of three layers, in order: the LLM router
   (`kind: "play_music"` with `music_query` / `music_service`), a conservative
@@ -227,12 +258,11 @@ as everything else here). Implemented in `src/music.ts` (pure logic) and
 - **`music.ts` is pure** — it parses the request, normalizes the service name
   to one of `amazon | spotify | youtube | apple`, and builds the service's
   search URL (`buildMusicUrl`). No I/O.
-- **The plugin performs the action**: `chatView.playMusic()` (and the
-  `ollamaCoder.playMusic` command) call `vscode.env.openExternal(...)` to open
-  that URL in the user's default browser/app. This honors Invariant 8 in
-  `ARCHITECTURE.md` — the model only labels; the plugin opens the URL locally.
-  `openExternal` is not filesystem/`child_process` I/O, so it doesn't widen the
-  `test/ioBoundary.test.js` allowlist.
+- **The app performs the action**: `chatView.playMusic()` (and the
+  `ollamaCoder.playMusic` command) call `vscode.env.openExternal(...)`; the CLI
+  calls `open` / `xdg-open` / `cmd /c start`. Both open the URL in the user's
+  default browser/app. This honors Invariant 8 in `ARCHITECTURE.md` — the model
+  only labels; the local app opens the URL.
 - **No keys, nothing leaves the machine** beyond the streaming URL you opened.
   Because there's no keyless, cross-service way to auto-start a *specific*
   track, we open the service's search for the query and you press play.
@@ -260,6 +290,10 @@ ollama-coder-vscode/
 └── src/
     ├── extension.ts             activate(): registers commands, status bar,
     │                              completion provider, chat webview
+    ├── cli.ts                   Standalone terminal app: REPL/one-shot agent,
+    │                              current folder as workspace, music opener
+    ├── cliTools.ts              Terminal implementation of agent tools with
+    │                              sandboxed fs/process I/O and y/N confirms
     ├── ollama.ts                HTTP client: generate() / chat() / chatFull() /
     │                              listModels(); shared streaming JSON-line parser;
     │                              user-friendly 404 ("model not pulled") errors
@@ -272,9 +306,10 @@ ollama-coder-vscode/
     │                              streaming render with apply buttons, agent loop
     ├── apply.ts                 insertAtCursor / replaceSelection / saveToFile
     │                              (with diff preview before overwrite)
-    ├── tools.ts                 Agent tool schemas + executors:
+    ├── tools.ts                 VS Code agent tool schemas + executors:
     │                              read_file, list_files, search_text,
-    │                              write_file, get_open_editors
+    │                              edit_file, repo_map, write_file,
+    │                              get_open_editors, run_command, web_search
     └── music.ts                 Pure "play music" helpers: parsePlayIntent,
                                    normalizeService, buildMusicUrl (no I/O)
 ```
@@ -347,7 +382,30 @@ commit fails the install before producing a `.vsix`.
 
 ---
 
-## 12. `scripts/install-ubuntu.sh`
+## 12. Terminal app install/run scripts
+
+The terminal app can be installed independently of VS Code:
+
+| Platform | Install script | Run-without-install script |
+| --- | --- | --- |
+| Ubuntu/Linux | `scripts/install-cli-ubuntu.sh` | `scripts/run-cli-ubuntu.sh [optional command]` |
+| macOS | `scripts/install-cli-macos.sh` | `scripts/run-cli-macos.sh [optional command]` |
+| Windows | `scripts/install-cli-windows.ps1` | `scripts/run-cli-windows.ps1 [optional command]` |
+
+The install scripts ensure Node.js >=18, optionally install/start Ollama and pull
+`CHAT_MODEL` / `ROUTER_MODEL` / `EXTRA_MODELS`, run `npm install`, compile the
+TypeScript, and `npm link --force` the package so both `ofc` and
+`ollama-free-coder` are available globally. Set `SKIP_OLLAMA=1` to avoid
+installing/starting Ollama and `SKIP_PULL=1` to avoid model pulls.
+
+The run scripts are useful during development: they execute `out/cli.js` from
+whatever folder you launched the script in by passing `--cwd <that folder>`, so
+the agent behaves like VS Code opened the current directory even though the
+script itself lives in this repository. Any arguments after the script name are
+joined into a one-shot command; without arguments, the app starts an interactive
+REPL.
+
+## 13. `scripts/install-ubuntu.sh`
 
 A single end-to-end installer for Ubuntu (tested on 24.04 / 26.04) and similar
 Debian-family systems. It is idempotent and safe to re-run.

@@ -42,6 +42,10 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "bin": {
+    "ollama-free-coder": "./out/cli.js",
+    "ofc": "./out/cli.js"
+  },
   "contributes": {
     "configuration": {
       "title": "Ollama Free Coder",
@@ -260,6 +264,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "cli": "node ./out/cli.js",
     "watch": "tsc -watch -p ./",
     "typecheck": "tsc -p ./ --noEmit",
     "test": "npm run compile && node --test test/*.test.js",

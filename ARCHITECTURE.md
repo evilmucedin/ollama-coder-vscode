@@ -149,10 +149,12 @@ These hold today and are the contract any future refactor must keep:
    third-party request.
 2. **Sandbox.** Every `read_file` / `write_file` / `list_files` /
    `search_text` path is resolved relative to the first workspace folder
-   and rejected if it escapes that root via `..`, absolute paths, or
-   symlinks. Verified in `tools.ts → resolveInsideWorkspace`.
+   (or the terminal app's startup folder) and rejected if it escapes that root
+   via `..`, absolute paths, or symlinks. Verified in
+   `tools.ts → resolveInsideWorkspace` and `cliTools.ts → resolveInsideWorkspace`.
 3. **User assent for writes.** No file is created or modified without an
-   explicit `y/N`-equivalent confirmation. Diff preview is offered.
+   explicit `y/N`-equivalent confirmation. Diff preview is offered in VS Code;
+   the standalone terminal app asks for the same explicit yes/no approval.
 4. **Abortable.** Every long-running LLM call is wired to an `AbortSignal`
    so the user can press Stop and have the request actually go away.
 5. **Tested as a contract.** Every regression the user has hit (HTTP 404
@@ -172,18 +174,22 @@ These hold today and are the contract any future refactor must keep:
    (`tools.read_file`, `repo_map`, `@mention` expansion in
    `chatView.expandMentions`, and the router's
    `chatView.collectRouterContext`) and packaged into a chat message. Every
-   file the model produces (`tools.write_file`, `tools.edit_file`, and
-   the `apply.saveToFile` fallback in `chatView.maybeFallbackSave`) is
-   written by the *plugin's* code, in the *plugin's* process, on the
-   *user's* machine, with the *user's* modal confirmation. If a model
+   file the model produces (`tools.write_file`, `tools.edit_file`,
+   `cliTools.write_file`, `cliTools.edit_file`, and the `apply.saveToFile`
+   fallback in `chatView.maybeFallbackSave`) is written by the app's code,
+   in the app's process, on the *user's* machine, with the *user's*
+   confirmation. If a model
    ever produces text like *“I have created the file”* without calling
    one of those tools, **nothing was written.** The system prompt for
    the agent says this explicitly.
 
    Source-level audit (pinned by `test/ioBoundary.test.js`): the only
    files in `src/` that touch the filesystem or spawn processes are
-   `tools.ts`, `apply.ts`, and `chatView.ts` (the last only for
-   `@mention` reads). Every other module is pure or HTTP-only.
+   `tools.ts`, `cliTools.ts`, `apply.ts`, and `chatView.ts` (the last only
+   for `@mention` reads). `cliTools.ts` is the deliberate second I/O boundary
+   for the standalone terminal application; it enforces the same workspace
+   sandbox and confirmation rules outside VS Code. Every other module is pure
+   or HTTP-only.
 
 ---
 

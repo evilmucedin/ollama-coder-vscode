@@ -26,11 +26,12 @@ also just `brew install ollama` / `winget install Ollama.Ollama` / etc.
 and pull a model manually.
 
 
-This repository ships **two sister plugins** that share the same ideas:
+This repository ships **three sister frontends** that share the same ideas and core Ollama plumbing:
 
-| Editor | Source | Installers | Docs |
+| Frontend | Source | Installers | Docs |
 | --- | --- | --- | --- |
 | **VS Code** | `src/` | `scripts/install-ubuntu.sh`, `scripts/install-macos.sh`, `scripts/install-windows.ps1` | this README, [`DOCUMENTATION.md`](./DOCUMENTATION.md), [`ARCHITECTURE.md`](./ARCHITECTURE.md) |
+| **Terminal app** | `src/cli.ts`, `src/cliTools.ts` | npm bin after compile/package | this README, [`DOCUMENTATION.md`](./DOCUMENTATION.md) |
 | **Vim / Neovim** | `vim/` | `vim/scripts/install-ubuntu.sh`, `vim/scripts/install-macos.sh`, `vim/scripts/install-windows.ps1` | [`vim/README.md`](./vim/README.md) + `:help ollama-coder` |
 
 All six installers share the same environment-variable contract:
@@ -56,7 +57,72 @@ lives in `scripts/pick-models.sh` and `scripts/pick-models.ps1` (same
 tier table), and prints `==> Detected N GB RAM (tier: X) -> ...` so the
 choice is visible.
 
-The rest of this README is about the VS Code extension.
+The rest of this README is about the VS Code extension and the standalone terminal app.
+
+---
+
+## Standalone terminal app
+
+The compiled package also provides a cross-platform CLI agent for Ubuntu, macOS,
+and Windows. Start it from a project folder and it treats that folder like VS
+Code's first workspace folder:
+
+```sh
+npm run compile
+node out/cli.js
+# or one-shot:
+node out/cli.js "Generate a new C++ solution of LeetCode problem 2222"
+```
+
+Install only the terminal app and expose the global `ofc` / `ollama-free-coder`
+commands:
+
+```sh
+# Ubuntu/Linux
+./scripts/install-cli-ubuntu.sh
+
+# macOS
+./scripts/install-cli-macos.sh
+
+# Windows PowerShell
+pwsh -ExecutionPolicy Bypass -File .\scripts\install-cli-windows.ps1
+```
+
+Run it from the current folder without globally linking it:
+
+```sh
+./scripts/run-cli-ubuntu.sh "Generate a new C++ solution of LeetCode problem 2222"
+./scripts/run-cli-macos.sh "Play Radio Tapok music"
+pwsh -ExecutionPolicy Bypass -File .\scripts\run-cli-windows.ps1 "Play Radio Tapok music"
+```
+
+When installed as an npm package, the same app is exposed as `ollama-free-coder`
+and `ofc`:
+
+```sh
+ofc "Play Radio Tapok music"
+ofc --model qwen2.5:7b --enable-run-command
+```
+
+The CLI reuses the existing Ollama client, LLM router, agent loop, problem
+reference detector, music parser, web search, repo-map extraction, and
+SEARCH/REPLACE editor. Its terminal-specific tool executor (`src/cliTools.ts`)
+implements the same safety contract as the VS Code extension: all file paths
+are sandboxed to the startup folder, file writes require a `y/N` confirmation,
+and shell commands are disabled unless `--enable-run-command` is passed (then
+confirmed per command). Music requests open the configured streaming service in
+the local browser/app.
+
+Useful options:
+
+| Option | Description |
+| --- | --- |
+| `--model MODEL` | Chat/agent model (default `llama3.1:8b`) |
+| `--router-model MODEL` | Small intent-router model (default `qwen2.5-coder:1.5b-base`) |
+| `--endpoint URL` | Ollama endpoint (default `$OLLAMA_HOST` or `http://localhost:11434`) |
+| `--cwd DIR` | Workspace folder instead of the current directory |
+| `--enable-run-command` | Enable the `run_command` tool, still with confirmation |
+| `--music-service amazon\|spotify\|youtube\|apple` | Default music service |
 
 ---
 
